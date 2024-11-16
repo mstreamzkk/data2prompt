@@ -3,9 +3,6 @@ import random
 import argparse
 import numpy as np
 
-import pandas as pd
-import random
-import numpy as np
 
 def simplify_dtype(dtype):
     """Convert numpy/pandas dtypes to simple primitive type names"""
