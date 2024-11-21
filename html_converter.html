@@ -31,6 +31,11 @@
         #segment-number {
             display: none;
         }
+		#output.error {
+			color: #721c24;
+			background-color: #f8d7da;
+			border-color: #f5c6cb;
+		}
     </style>
 </head>
 <body>
@@ -65,7 +70,94 @@
     <div id="output"></div>
 
     <script>
-        function simplifyDtype(dtype) {
+        function sanitizeInput(input) {
+			// Remove HTML tags and special characters
+			const sanitized = input.toString()
+				.replace(/&/g, '&amp;')
+				.replace(/</g, '&lt;')
+				.replace(/>/g, '&gt;')
+				.replace(/"/g, '&quot;')
+				.replace(/'/g, '&#039;')
+				.replace(/[^\w\s,.-]/gi, ''); // Only allow alphanumeric, commas, periods, hyphens
+			return sanitized;
+		}
+		
+		function validateInputs() {
+			// Validate file input
+			const fileInput = document.getElementById('csvFile');
+			if (!fileInput.files[0]) {
+				throw new Error('Please select a CSV file');
+			}
+			
+			if (!fileInput.files[0].name.toLowerCase().endsWith('.csv')) {
+				throw new Error('File must be a CSV');
+			}
+
+			// Validate max rows
+			const maxRows = document.getElementById('maxRows').value;
+			if (isNaN(maxRows) || maxRows < 1 || maxRows > 10000) { // Set reasonable limits
+				throw new Error('Max rows must be between 1 and 10000');
+			}
+
+			// Validate sampling type
+			const samplingType = document.getElementById('samplingType').value;
+			const validSamplingTypes = ['sequential', 'random', 'segment'];
+			if (!validSamplingTypes.includes(samplingType)) {
+				throw new Error('Invalid sampling type');
+			}
+
+			// Validate segment number
+			const segmentNum = document.getElementById('segmentNum').value;
+			if (samplingType === 'segment') {
+				if (isNaN(segmentNum) || segmentNum < 0 || segmentNum > 1000) { // Set reasonable limits
+					throw new Error('Segment number must be between 0 and 1000');
+				}
+			}
+
+			return {
+				file: fileInput.files[0],
+				maxRows: parseInt(maxRows),
+				samplingType: samplingType,
+				segmentNum: parseInt(segmentNum)
+			};
+		}
+		
+		function validateCSVContent(text) {
+			// Check for maximum file size
+			if (text.length > 10 * 1024 * 1024) { // 10MB limit
+				throw new Error('File too large. Maximum size is 10MB');
+			}
+
+			// Basic CSV structure validation
+			const lines = text.split('\n');
+			if (lines.length < 2) { // At least header and one data row
+				throw new Error('CSV must contain at least a header row and one data row');
+			}
+
+			const headerCount = lines[0].split(',').length;
+			if (headerCount < 1) {
+				throw new Error('Invalid CSV structure: no headers found');
+			}
+
+			// Validate each line has same number of columns
+			//for (let i = 1; i < lines.length; i++) {
+			//	if (lines[i].trim() === '') continue; // Skip empty lines
+			//	const columnCount = lines[i].split(',').length;
+			//	if (columnCount !== headerCount) {
+			//		throw new Error(`Invalid CSV structure: inconsistent column count at line ${i + 1}`);
+			//	}
+			//}
+
+			// Sanitize each cell
+			return lines.map(line => 
+				line.split(',').map(cell => sanitizeInput(cell)).join(',')
+			).join('\n');
+		}
+		
+		
+		
+		
+		function simplifyDtype(dtype) {
             dtype = dtype.toLowerCase();
             
             if (dtype.includes('int')) return 'integer';
@@ -86,6 +178,11 @@
         }
 
         function processFile() {
+		
+			// Validate all inputs options first
+			const validatedInputs = validateInputs();
+		
+		
             const fileInput = document.getElementById('csvFile');
             const maxRows = parseInt(document.getElementById('maxRows').value);
             const samplingType = document.getElementById('samplingType').value;
@@ -98,60 +195,74 @@
 
             const reader = new FileReader();
             reader.onload = function(e) {
-                const text = e.target.result;
-                const lines = text.split('\n').map(line => line.split(','));
-                const headers = lines[0];
-                const data = lines.slice(1).filter(line => line.length === headers.length);
+                //const text = e.target.result;
+				try {
+					const sanitizedText = validateCSVContent(e.target.result);
+					
+					const lines = sanitizedText.split('\n').map(line => line.split(','));
+					const headers = lines[0];
+					const data = lines.slice(1).filter(line => line.length === headers.length);
+					
+					// Infer data types
+					const dtypes = headers.map((_, colIndex) => {
+						const colValues = data.map(row => row[colIndex]);
+						return simplifyDtype(inferDataType(colValues));
+					});
+
+					let selectedRows;
+					const totalRows = data.length;
+
+					if (samplingType === 'sequential') {
+						selectedRows = data.slice(0, maxRows);
+					} else if (samplingType === 'random') {
+						selectedRows = [];
+						const indices = new Set();
+						while (indices.size < Math.min(maxRows, totalRows)) {
+							indices.add(Math.floor(Math.random() * totalRows));
+						}
+						selectedRows = Array.from(indices).map(i => data[i]);
+					} else if (samplingType === 'segment') {
+						const startIdx = segmentNum * maxRows;
+						selectedRows = data.slice(startIdx, startIdx + maxRows);
+					}
+
+					let output = "Dataset Description:\n";
+					output += `Total rows in dataset: ${totalRows}\n`;
+					output += `Rows included in this sample: ${selectedRows.length}\n`;
+					output += `Sampling method: ${samplingType}\n`;
+					if (samplingType === 'segment') {
+						output += `Segment number: ${segmentNum}\n`;
+					}
+
+					output += "\nColumn Information:\n";
+					headers.forEach((header, i) => {
+						const uniqueVals = [...new Set(data.map(row => row[i]))].slice(0, 3);
+						output += `- ${header} (${dtypes[i]}): Example values: ${uniqueVals.join(', ')}\n`;
+					});
+
+					output += "\nData Format:\n";
+					output += "Each row contains values separated by commas in the following order:\n";
+					output += headers.join(", ") + "\n";
+
+					output += "\nData Rows:\n";
+					selectedRows.forEach((row, i) => {
+						output += `Row ${i+1}: ${row.join(',')}\n`;
+					});
+
+					document.getElementById('output').textContent = output;
+					
+				} catch (error) {
+					document.getElementById('output').textContent = `Error: ${error.message}`;
+					console.error(error);
+				}
+				
                 
-                // Infer data types
-                const dtypes = headers.map((_, colIndex) => {
-                    const colValues = data.map(row => row[colIndex]);
-                    return simplifyDtype(inferDataType(colValues));
-                });
-
-                let selectedRows;
-                const totalRows = data.length;
-
-                if (samplingType === 'sequential') {
-                    selectedRows = data.slice(0, maxRows);
-                } else if (samplingType === 'random') {
-                    selectedRows = [];
-                    const indices = new Set();
-                    while (indices.size < Math.min(maxRows, totalRows)) {
-                        indices.add(Math.floor(Math.random() * totalRows));
-                    }
-                    selectedRows = Array.from(indices).map(i => data[i]);
-                } else if (samplingType === 'segment') {
-                    const startIdx = segmentNum * maxRows;
-                    selectedRows = data.slice(startIdx, startIdx + maxRows);
-                }
-
-                let output = "Dataset Description:\n";
-                output += `Total rows in dataset: ${totalRows}\n`;
-                output += `Rows included in this sample: ${selectedRows.length}\n`;
-                output += `Sampling method: ${samplingType}\n`;
-                if (samplingType === 'segment') {
-                    output += `Segment number: ${segmentNum}\n`;
-                }
-
-                output += "\nColumn Information:\n";
-                headers.forEach((header, i) => {
-                    const uniqueVals = [...new Set(data.map(row => row[i]))].slice(0, 3);
-                    output += `- ${header} (${dtypes[i]}): Example values: ${uniqueVals.join(', ')}\n`;
-                });
-
-                output += "\nData Format:\n";
-                output += "Each row contains values separated by commas in the following order:\n";
-                output += headers.join(", ") + "\n";
-
-                output += "\nData Rows:\n";
-                selectedRows.forEach((row, i) => {
-                    output += `Row ${i+1}: ${row.join(',')}\n`;
-                });
-
-                document.getElementById('output').textContent = output;
             };
             
+			reader.onerror = function() {
+				document.getElementById('output').textContent = 'Error reading file';
+			};
+			
             reader.readAsText(fileInput.files[0]);
         }
 
